@@ -1,0 +1,26 @@
+<configuration name="udptun.conf" description="">
+    <settings>
+        <param name="buffer-max-size" value="4096"/>
+        <param name="shared-secret" value="secret"/>
+        <param name="auth-public-packets" value="true"/>
+        <param name="encrypt-public-packets" value="true"/>
+
+        <!-- private interface for capture traffic (xconf or similar apps) -->
+        <param name="pvtint-local-ip" value="127.0.0.1"/>
+        <param name="pvtint-remote-ip" value="127.0.0.1"/>
+        <param name="pvtint-port-in"  value="65020"/>
+        <param name="pvtint-port-out" value="65021"/>
+
+        <!-- inbound tunnel -->
+        <param name="pubint-ip" value="127.0.0.1"/>
+        <param name="pubint-port" value="65022"/>
+    </settings>
+
+    <!-- outbound tunnels -->
+    <tunnels>
+        <tunnel name="node1" ip="127.0.0.2" port="65022" />
+        <tunnel name="node2" ip="127.0.0.3" port="65022" />
+        <tunnel name="node3" ip="127.0.0.4" port="65022" />
+    </tunnels>
+
+</configuration>
