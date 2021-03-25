@@ -8,7 +8,6 @@
  - encrypt public traffic (based on a state less 'rabbit' cipher (>>>todo) )
  - add / remove tunnels in a real time 
 
-# Diagram
 <div aling="center">
  <img src='https://github.com/akscf/mod_udptun/blob/main/bin/schema.png'>
 </div>
