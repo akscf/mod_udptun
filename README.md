@@ -10,6 +10,6 @@
 
 # Diagram
 <div aling="center">
- <img src='/blob/master/bin/schema.png'>
+ <img src='/blob/main/bin/schema.png'>
 </div>
 
