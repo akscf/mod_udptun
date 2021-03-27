@@ -5,7 +5,7 @@
 
 # Basic features
  - authenticate public traffic
- - encrypt public traffic (based on a state less 'rabbit' cipher (>>>todo) )
+ - encrypt public traffic
  - add / remove tunnels in a real time 
 
 # Diagram
