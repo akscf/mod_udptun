@@ -4,8 +4,8 @@
 </p>
 
 # Basic features
- - authenticate public traffic
- - encrypt public traffic
+ - public traffic authentication
+ - public traffic encryption
  - add / remove tunnels in a real time 
 
 <div aling="center">
