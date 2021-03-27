@@ -3,6 +3,7 @@
  * https://akscf.me/
  **/
 #include "mod_udptun.h"
+#include "chipher.h"
 
 static struct {
     switch_memory_pool_t    *pool;
@@ -161,6 +162,7 @@ static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, v
     switch_sockaddr_t *saddr = NULL, *caddr = NULL, *to_addr = NULL, *from_addr = NULL;
     switch_byte_t *payload_ptr = NULL;
     tunnel_packet_hdr_t *phdr_ptr = NULL;
+    cipher_ctx_t *cipher_ctx = NULL;
     char md5_hash[SWITCH_MD5_DIGEST_STRING_SIZE] = { 0 };
     switch_size_t bytes = 0;
     int fdr = 0;
@@ -179,6 +181,14 @@ static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, v
         }
         memset((void *)auth_buffer, 0, SALT_SIZE);
         memcpy((void *)(auth_buffer + SALT_SIZE), globals.shared_secret, strlen(globals.shared_secret));
+    }
+
+    if(globals.fl_encrypt_public_packets) {
+        if((cipher_ctx = switch_core_alloc(pool, sizeof(cipher_ctx_t))) == NULL) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail\n");
+            switch_goto_status(SWITCH_STATUS_GENERR, out);
+        }
+        cipher_init(cipher_ctx, globals.shared_secret, strlen(globals.shared_secret));
     }
 
     /* xconf client socket */
@@ -253,6 +263,20 @@ static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, v
                 if(strncmp((char *)md5_hash, (char *)phdr_ptr->auth_hash, sizeof(md5_hash)) !=0) {
                     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unauthorized packet (ip: %s)\n", remote_ip_addr);
                     goto sleep;
+                }
+            }
+
+            if((phdr_ptr->flags & PACKET_FLAGS_ENCRYPTED)) {
+                if(globals.fl_encrypt_public_packets) {
+                    uint32_t psz = phdr_ptr->payload_len;
+                    uint32_t pad = (psz % sizeof(int));
+
+                    if(pad) { psz += sizeof(int) - pad; }
+                    if(psz > recv_buffer_size) { psz = phdr_ptr->payload_len; }
+
+                    cipher_decrypt(cipher_ctx, phdr_ptr->id, payload_ptr, psz);
+                } else {
+                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Encrypted packet from '%s' was ignored! (encryption disabled)\n", remote_ip_addr);
                 }
             }
 
@@ -394,8 +418,9 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
     switch_sockaddr_t *loaddr = NULL, *from_addr = NULL;
     tunnel_packet_hdr_t *phdr_ptr = NULL;
     switch_byte_t *payload_ptr = NULL;
+    cipher_ctx_t *cipher_ctx = NULL;
     switch_hash_index_t *hidx = NULL;
-    uint32_t send_len;
+    uint32_t send_len, packet_id = 0;
     switch_size_t bytes = 0;
     time_t salt_renew_time = 0;
     const char *remote_ip_addr;
@@ -418,6 +443,14 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
         }
         switch_stun_random_string((char *)auth_buffer, SALT_SIZE, NULL);
         memcpy((void *)(auth_buffer + SALT_SIZE), globals.shared_secret, strlen(globals.shared_secret));
+    }
+
+    if(globals.fl_encrypt_public_packets) {
+        if((cipher_ctx = switch_core_alloc(pool, sizeof(cipher_ctx_t))) == NULL) {
+            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail\n");
+            switch_goto_status(SWITCH_STATUS_GENERR, out);
+        }
+        cipher_init(cipher_ctx, globals.shared_secret, strlen(globals.shared_secret));
     }
 
     if((status = switch_sockaddr_info_get(&loaddr, globals.pvtint_local_ip, SWITCH_UNSPEC, globals.pvtint_port_in, 0, pool)) != SWITCH_STATUS_SUCCESS) {
@@ -471,6 +504,8 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
                 payload_ptr = (void *)(send_buffer + sizeof(*phdr_ptr));
 
                 phdr_ptr->magic = PACKET_MAGIC;
+                phdr_ptr->id = packet_id++;
+                phdr_ptr->flags = 0x0;
                 phdr_ptr->payload_len = bytes;
 
                 memcpy(payload_ptr, recv_buffer, bytes);
@@ -478,6 +513,17 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
                 if(globals.fl_auth_public_packets) {
                     switch_md5_string((char *)phdr_ptr->auth_hash, auth_buffer, auth_buffer_len);
                     memcpy(phdr_ptr->auth_salt, auth_buffer, SALT_SIZE);
+                }
+
+                if(globals.fl_encrypt_public_packets) {
+                    uint32_t psz = phdr_ptr->payload_len;
+                    uint32_t pad = (psz % sizeof(int));
+
+                    if(pad) { psz += sizeof(int) - pad; }
+                    if(psz > send_buffer_size) { psz = phdr_ptr->payload_len; }
+
+                    cipher_encrypt(cipher_ctx, phdr_ptr->id, payload_ptr, psz);
+                    phdr_ptr->flags |= PACKET_FLAGS_ENCRYPTED;
                 }
 
                 switch_mutex_lock(globals.mutex_tunnels);
@@ -555,6 +601,7 @@ SWITCH_STANDARD_API(udptun_cmd_function) {
         if(strcasecmp(argv[0], "conf") == 0) {
             stream->write_function(stream, "outbound tunnel.......: %s:%i ==> {*}\n", globals.pvtint_local_ip, globals.pvtint_port_in);
             stream->write_function(stream, "inbound tunnel........: %s:%i ==> %s:%i\n", globals.udptun_srv_ip, globals.udptun_srv_port, globals.pvtint_remote_ip, globals.pvtint_port_out);
+            stream->write_function(stream, "encryption............: %s\n", globals.fl_encrypt_public_packets ? "on" : "off");
             goto out;
         }
         if(strcasecmp(argv[0], "list") == 0) {
@@ -742,6 +789,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "udp-tun-%s ready\n", VERSION);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "outbound tunnels.......: %s:%i ==> {*}\n", globals.pvtint_local_ip, globals.pvtint_port_in);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "inbound tunnels........: %s:%i ==> %s:%i\n", globals.udptun_srv_ip, globals.udptun_srv_port, globals.pvtint_remote_ip, globals.pvtint_port_out);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "encryption.............: %s\n", globals.fl_encrypt_public_packets ? "on" : "off");
 
 done:
     if(xml) {

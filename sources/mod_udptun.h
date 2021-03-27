@@ -15,13 +15,14 @@
 #define false 0
 #endif
 
-#define VERSION                     "1.0"
+#define VERSION                     "1.1"
 #define PACKET_MAGIC                0xABACADAE
 #define SALT_SIZE                   8
 #define SALT_LIFE_TIME              900 // 15 min
 #define SHARED_SECRET_LEN_MAX       32
 #define SHARED_SECRET_LEN_MIN       4
 
+#define PACKET_FLAGS_ENCRYPTED      0x1
 
 typedef struct {
     uint8_t                 fl_ready;
@@ -43,6 +44,8 @@ typedef struct {
 
 typedef struct {
     uint32_t                magic;
+    uint32_t                id;
+    uint16_t                flags;
     uint32_t                payload_len;
     uint8_t                 auth_salt[SALT_SIZE];
     uint8_t                 auth_hash[SWITCH_MD5_DIGEST_STRING_SIZE];
