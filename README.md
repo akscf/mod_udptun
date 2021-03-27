@@ -8,8 +8,7 @@
  - encrypt public traffic
  - add / remove tunnels in a real time 
 
-# Diagram
 <div aling="center">
- <img src='/blob/master/bin/schema.png'>
+ <img src='https://github.com/akscf/mod_udptun/blob/main/bin/schema.png'>
 </div>
 
