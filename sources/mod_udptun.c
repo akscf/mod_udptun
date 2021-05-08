@@ -166,7 +166,7 @@ static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, v
     char md5_hash[SWITCH_MD5_DIGEST_STRING_SIZE] = { 0 };
     switch_size_t bytes = 0;
     int fdr = 0;
-    char ipbuf[48];
+    char ipbuf[48] = { 0 };
     const char *remote_ip_addr;
 
     if((recv_buffer = switch_core_alloc(pool, recv_buffer_size)) == NULL) {
@@ -383,7 +383,7 @@ out:
     tunnel->fl_destroyed = true;
 
     while(tunnel->tx_sem > 0) {
-        switch_yield(50000);
+        switch_yield(100000);
     }
 
     if (socket) {
@@ -425,7 +425,7 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
     time_t salt_renew_time = 0;
     const char *remote_ip_addr;
     int fdr = 0;
-    char ipbuf[48];
+    char ipbuf[48] = { 0 };
 
     if((recv_buffer = switch_core_alloc(pool, recv_buffer_size)) == NULL) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail\n");
