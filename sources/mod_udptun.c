@@ -97,11 +97,11 @@ static switch_status_t create_outbound_tunnel(char *name, char *ip, char *port, 
     switch_memory_pool_t *pool_tmp = NULL;
     outbound_tunnel_t *tunnel = NULL;
 
-    if(!name) {
+    if(zstr(name)) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Invalid tunnel name\n");
         switch_goto_status(SWITCH_STATUS_FALSE, out);
     }
-    if(!ip) {
+    if(zstr(ip)) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Invalid tunnel ip\n");
         switch_goto_status(SWITCH_STATUS_FALSE, out);
     }
@@ -112,6 +112,7 @@ static switch_status_t create_outbound_tunnel(char *name, char *ip, char *port, 
 
     switch_mutex_lock(globals.mutex_tunnels);
     if(switch_core_hash_find(globals.tunnels, name)) {
+        switch_mutex_unlock(globals.mutex_tunnels);
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Tunnel '%s' already exists\n", name);
         switch_goto_status(SWITCH_STATUS_FALSE, out);
     }
@@ -361,7 +362,7 @@ static void *SWITCH_THREAD_FUNC outbound_tunnel_thread(switch_thread_t *thread, 
             break;
         }
         if(!globals.fl_ready) {
-            switch_yield(50000);
+            switch_yield(100000);
             continue;
         }
         if(tunnel->send_data_len && send_buffer_id_local != tunnel->send_buffer_id) {
@@ -379,9 +380,8 @@ static void *SWITCH_THREAD_FUNC outbound_tunnel_thread(switch_thread_t *thread, 
             tunnel->fl_send_buf_rdy_wr = true;
             switch_mutex_unlock(tunnel->mutex);
         }
-        switch_yield(2000);
+        switch_yield(5000);
     }
-
 out:
     tunnel->fl_ready = false;
     tunnel->fl_destroyed = true;
@@ -543,7 +543,7 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
 
             if(send_len > 0) {
                 switch_mutex_lock(globals.mutex_tunnels);
-                for (hidx = switch_core_hash_first_iter(globals.tunnels, hidx); hidx; hidx = switch_core_hash_next(&hidx)) {
+                for(hidx = switch_core_hash_first_iter(globals.tunnels, hidx); hidx; hidx = switch_core_hash_next(&hidx)) {
                     const void *hkey = NULL; void *hval = NULL;
 
                     switch_core_hash_this(hidx, &hkey, NULL, &hval);
@@ -783,11 +783,14 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
             char *port = (char *) switch_xml_attr_soft(xmltunnel, "port");
             char *ip = (char *) switch_xml_attr_soft(xmltunnel, "ip");
 
-            if(create_outbound_tunnel(name, ip, port, false) != SWITCH_STATUS_SUCCESS){
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "Couldn't create outbound tunnel: %s\n", name);
-                switch_goto_status(SWITCH_STATUS_GENERR, done);
+            if((status = create_outbound_tunnel(name, ip, port, false)) != SWITCH_STATUS_SUCCESS){
+                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't create outbound tunnel: %s\n", name);
+                break;
             }
         }
+    }
+    if(status != SWITCH_STATUS_SUCCESS) {
+        switch_goto_status(SWITCH_STATUS_FALSE, done);
     }
 
     *module_interface = switch_loadable_module_create_module_interface(pool, modname);
@@ -803,7 +806,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
 
     globals.fl_ready = true;
 
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "udp-tun-%s ready (passthrough mode: %s)\n", VERSION, (globals.fl_passthrough ? "on" : "off") );
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "udp-tun-%s ready\n", VERSION);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "passthrough mode.......: %s\n", (globals.fl_passthrough ? "on" : "off"));
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "outbound tunnels.......: %s:%i ==> {*}\n", globals.pvtint_local_ip, globals.pvtint_port_in);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "inbound tunnels........: %s:%i ==> %s:%i\n", globals.udptun_srv_ip, globals.udptun_srv_port, globals.pvtint_remote_ip, globals.pvtint_port_out);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "encryption.............: %s\n", globals.fl_encrypt_public_packets ? "on" : "off");
@@ -811,6 +815,15 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
 done:
     if(xml) {
         switch_xml_free(xml);
+    }
+    if(status != SWITCH_STATUS_SUCCESS) {
+        globals.fl_shutdown = true;
+        while(globals.active_threads > 0) {
+            switch_yield(100000);
+        }
+        if(globals.tunnels) {
+            switch_core_hash_destroy(&globals.tunnels);
+        }
     }
     return status;
 }
@@ -822,12 +835,12 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_udptun_shutdown) {
     switch_event_unbind_callback(event_handler_shutdown);
 
     globals.fl_shutdown = true;
-    while (globals.active_threads > 0) {
+    while(globals.active_threads > 0) {
         switch_yield(100000);
     }
 
     switch_mutex_lock(globals.mutex_tunnels);
-    while ((hi = switch_core_hash_first_iter(globals.tunnels, hi))) {
+    for(hi = switch_core_hash_first_iter(globals.tunnels, hi); hi; hi = switch_core_hash_next(&hi)) {
         switch_core_hash_this(hi, NULL, NULL, &hval);
         outbound_tunnel_t *tunnel = (outbound_tunnel_t *) hval;
         if(tunnel_sem_take(tunnel)) {
@@ -836,9 +849,6 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_udptun_shutdown) {
         }
     }
     switch_safe_free(hi);
-    switch_mutex_unlock(globals.mutex_tunnels);
-
-    switch_mutex_lock(globals.mutex_tunnels);
     switch_core_hash_destroy(&globals.tunnels);
     switch_mutex_unlock(globals.mutex_tunnels);
 
