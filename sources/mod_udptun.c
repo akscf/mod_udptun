@@ -19,6 +19,7 @@ static struct {
     uint32_t                udptun_srv_port;
     uint32_t                buffer_max_size;
     uint32_t                active_threads;
+    uint8_t                 fl_passthrough;
     uint8_t                 fl_auth_public_packets;
     uint8_t                 fl_encrypt_public_packets;
     uint8_t                 fl_shutdown;
@@ -245,45 +246,48 @@ static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, v
         bytes = recv_buffer_size;
         if(switch_socket_recvfrom(from_addr, server_socket, 0, (void *)recv_buffer, &bytes) == SWITCH_STATUS_SUCCESS && bytes > sizeof(tunnel_packet_hdr_t)) {
             remote_ip_addr = switch_get_addr(ipbuf, sizeof(ipbuf), from_addr);
-            phdr_ptr = (void *)(recv_buffer);
-            payload_ptr = (void *)(recv_buffer + sizeof(*phdr_ptr));
 
-            if(phdr_ptr->magic != PACKET_MAGIC) {
-                goto sleep;
-            }
+            if(!globals.fl_passthrough) {
+                phdr_ptr = (void *)(recv_buffer);
+                payload_ptr = (void *)(recv_buffer + sizeof(*phdr_ptr));
 
-            if(!phdr_ptr->payload_len || phdr_ptr->payload_len > recv_buffer_size) {
-                goto sleep;
-            }
-
-            if(globals.fl_auth_public_packets) {
-                memcpy(auth_buffer, (char *)phdr_ptr->auth_salt, SALT_SIZE);
-                switch_md5_string((char *)md5_hash, auth_buffer, auth_buffer_len);
-
-                if(strncmp((char *)md5_hash, (char *)phdr_ptr->auth_hash, sizeof(md5_hash)) !=0) {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unauthorized packet (ip: %s)\n", remote_ip_addr);
+                if(phdr_ptr->magic != PACKET_MAGIC) {
                     goto sleep;
                 }
-            }
-
-            if((phdr_ptr->flags & PACKET_FLAGS_ENCRYPTED)) {
-                if(globals.fl_encrypt_public_packets) {
-                    uint32_t psz = phdr_ptr->payload_len;
-                    uint32_t pad = (psz % sizeof(int));
-
-                    if(pad) { psz += sizeof(int) - pad; }
-                    if(psz > recv_buffer_size) { psz = phdr_ptr->payload_len; }
-
-                    cipher_decrypt(cipher_ctx, phdr_ptr->id, payload_ptr, psz);
-                } else {
-                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Encrypted packet from '%s' was ignored! (encryption disabled)\n", remote_ip_addr);
+                if(!phdr_ptr->payload_len || phdr_ptr->payload_len > recv_buffer_size) {
+                    goto sleep;
                 }
+
+                if(globals.fl_auth_public_packets) {
+                    memcpy(auth_buffer, (char *)phdr_ptr->auth_salt, SALT_SIZE);
+                    switch_md5_string((char *)md5_hash, auth_buffer, auth_buffer_len);
+
+                    if(strncmp((char *)md5_hash, (char *)phdr_ptr->auth_hash, sizeof(md5_hash)) !=0) {
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Unauthorized packet (ip: %s)\n", remote_ip_addr);
+                        goto sleep;
+                    }
+                }
+
+                if((phdr_ptr->flags & PACKET_FLAGS_ENCRYPTED)) {
+                    if(globals.fl_encrypt_public_packets) {
+                        uint32_t psz = phdr_ptr->payload_len;
+                        uint32_t pad = (psz % sizeof(int));
+
+                        if(pad) { psz += sizeof(int) - pad; }
+                        if(psz > recv_buffer_size) { psz = phdr_ptr->payload_len; }
+
+                        cipher_decrypt(cipher_ctx, phdr_ptr->id, payload_ptr, psz);
+                    } else {
+                        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Encrypted packet from '%s' was ignored! (encryption disabled)\n", remote_ip_addr);
+                    }
+                }
+
+                bytes = phdr_ptr->payload_len;
+                switch_socket_sendto(client_socket, to_addr, 0, (void *)payload_ptr, &bytes);
+            } else {
+                switch_socket_sendto(client_socket, to_addr, 0, (void *)recv_buffer, &bytes);
             }
-
-            bytes = phdr_ptr->payload_len;
-            switch_socket_sendto(client_socket, to_addr, 0, (void *)payload_ptr, &bytes);
         }
-
 sleep:
         if(pollfd) {
             switch_poll(pollfd, 1, &fdr, 10000);
@@ -485,7 +489,7 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
             break;
         }
 
-        if(globals.fl_auth_public_packets) {
+        if(globals.fl_auth_public_packets && !globals.fl_passthrough) {
             if(!salt_renew_time || salt_renew_time < switch_epoch_time_now(NULL)) {
                 switch_stun_random_string((char *)auth_buffer, SALT_SIZE, NULL);
                 salt_renew_time = (switch_epoch_time_now(NULL) + SALT_LIFE_TIME);
@@ -495,37 +499,49 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
         bytes = recv_buffer_size;
         if(switch_socket_recvfrom(from_addr, socket, 0, (void *)recv_buffer, &bytes) == SWITCH_STATUS_SUCCESS && bytes > 0) {
             remote_ip_addr = switch_get_addr(ipbuf, sizeof(ipbuf), from_addr);
-            send_len = (bytes + sizeof(tunnel_packet_hdr_t));
+            send_len = 0;
 
-            if(send_len <= send_buffer_size) {
-                memset((void *)send_buffer, 0, send_len);
+            if(!globals.fl_passthrough) {
+                send_len = (bytes + sizeof(tunnel_packet_hdr_t));
 
-                phdr_ptr = (void *)(send_buffer);
-                payload_ptr = (void *)(send_buffer + sizeof(*phdr_ptr));
+                if(send_len <= send_buffer_size) {
+                    memset((void *)send_buffer, 0, send_len);
 
-                phdr_ptr->magic = PACKET_MAGIC;
-                phdr_ptr->id = packet_id++;
-                phdr_ptr->flags = 0x0;
-                phdr_ptr->payload_len = bytes;
+                    phdr_ptr = (void *)(send_buffer);
+                    payload_ptr = (void *)(send_buffer + sizeof(*phdr_ptr));
 
-                memcpy(payload_ptr, recv_buffer, bytes);
+                    phdr_ptr->magic = PACKET_MAGIC;
+                    phdr_ptr->id = packet_id++;
+                    phdr_ptr->flags = 0x0;
+                    phdr_ptr->payload_len = bytes;
 
-                if(globals.fl_auth_public_packets) {
-                    switch_md5_string((char *)phdr_ptr->auth_hash, auth_buffer, auth_buffer_len);
-                    memcpy(phdr_ptr->auth_salt, auth_buffer, SALT_SIZE);
+                    memcpy(payload_ptr, recv_buffer, bytes);
+
+                    if(globals.fl_auth_public_packets) {
+                        switch_md5_string((char *)phdr_ptr->auth_hash, auth_buffer, auth_buffer_len);
+                        memcpy(phdr_ptr->auth_salt, auth_buffer, SALT_SIZE);
+                    }
+
+                    if(globals.fl_encrypt_public_packets) {
+                        uint32_t psz = phdr_ptr->payload_len;
+                        uint32_t pad = (psz % sizeof(int));
+
+                        if(pad) { psz += sizeof(int) - pad; }
+                        if(psz > send_buffer_size) { psz = phdr_ptr->payload_len; }
+
+                        cipher_encrypt(cipher_ctx, phdr_ptr->id, payload_ptr, psz);
+                        phdr_ptr->flags |= PACKET_FLAGS_ENCRYPTED;
+                    }
+                } else {
+                    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "packet is too long: %i  (max: %i)\n", send_len, send_buffer_size);
+                    send_len = 0;
                 }
+            } else {
+                send_len = bytes;
+                memcpy(send_buffer, recv_buffer, send_len);
+            }
 
-                if(globals.fl_encrypt_public_packets) {
-                    uint32_t psz = phdr_ptr->payload_len;
-                    uint32_t pad = (psz % sizeof(int));
-
-                    if(pad) { psz += sizeof(int) - pad; }
-                    if(psz > send_buffer_size) { psz = phdr_ptr->payload_len; }
-
-                    cipher_encrypt(cipher_ctx, phdr_ptr->id, payload_ptr, psz);
-                    phdr_ptr->flags |= PACKET_FLAGS_ENCRYPTED;
-                }
-
+            if(send_len > 0) {
                 switch_mutex_lock(globals.mutex_tunnels);
                 for (hidx = switch_core_hash_first_iter(globals.tunnels, hidx); hidx; hidx = switch_core_hash_next(&hidx)) {
                     const void *hkey = NULL; void *hval = NULL;
@@ -546,9 +562,6 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
                     }
                 }
                 switch_mutex_unlock(globals.mutex_tunnels);
-
-            } else {
-                switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "packet is too long: %i  (max: %i)\n", send_len, send_buffer_size);
             }
         }
 
@@ -599,6 +612,7 @@ SWITCH_STANDARD_API(udptun_cmd_function) {
     }
     if(argc == 1) {
         if(strcasecmp(argv[0], "conf") == 0) {
+            stream->write_function(stream, "passthrough mode......: %s\n", globals.fl_passthrough ? "on" : "off");
             stream->write_function(stream, "outbound tunnel.......: %s:%i ==> {*}\n", globals.pvtint_local_ip, globals.pvtint_port_in);
             stream->write_function(stream, "inbound tunnel........: %s:%i ==> %s:%i\n", globals.udptun_srv_ip, globals.udptun_srv_port, globals.pvtint_remote_ip, globals.pvtint_port_out);
             stream->write_function(stream, "encryption............: %s\n", globals.fl_encrypt_public_packets ? "on" : "off");
@@ -689,6 +703,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
 
     globals.pool = pool;
     globals.fl_shutdown = false;
+    globals.fl_passthrough = false;
     globals.fl_auth_public_packets = false;
     globals.fl_encrypt_public_packets = false;
     globals.buffer_max_size = 4096;
@@ -710,6 +725,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
                 globals.fl_auth_public_packets = (strcasecmp(val, "true") == 0 ? true : false);
             } else if(!strcasecmp(var, "encrypt-public-packets")) {
                 globals.fl_encrypt_public_packets = (strcasecmp(val, "true") == 0 ? true : false);
+            } else if(!strcasecmp(var, "passthrough_mode")) {
+                globals.fl_passthrough = (strcasecmp(val, "true") == 0 ? true : false);
             } else if(!strcasecmp(var, "shared-secret")) {
                 globals.shared_secret = switch_core_strdup(pool, val);
             } else if(!strcasecmp(var, "buffer-max-size")) {
@@ -786,7 +803,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
 
     globals.fl_ready = true;
 
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "udp-tun-%s ready\n", VERSION);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "udp-tun-%s ready (passthrough mode: %s)\n", VERSION, (globals.fl_passthrough ? "on" : "off") );
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "outbound tunnels.......: %s:%i ==> {*}\n", globals.pvtint_local_ip, globals.pvtint_port_in);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "inbound tunnels........: %s:%i ==> %s:%i\n", globals.udptun_srv_ip, globals.udptun_srv_port, globals.pvtint_remote_ip, globals.pvtint_port_out);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "encryption.............: %s\n", globals.fl_encrypt_public_packets ? "on" : "off");
@@ -806,7 +823,7 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_udptun_shutdown) {
 
     globals.fl_shutdown = true;
     while (globals.active_threads > 0) {
-        switch_yield(50000);
+        switch_yield(100000);
     }
 
     switch_mutex_lock(globals.mutex_tunnels);

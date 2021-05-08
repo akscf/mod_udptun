@@ -2,8 +2,9 @@
     <settings>
         <param name="buffer-max-size" value="4096"/>
         <param name="shared-secret" value="secret"/>
-        <param name="auth-public-packets" value="true"/>
-        <param name="encrypt-public-packets" value="true"/>
+        <param name="auth-public-packets" value="false"/>
+        <param name="encrypt-public-packets" value="false"/>
+        <param name="passthrough_mode" value="false"/>
 
         <!-- private interface for capture traffic (xconf or similar apps) -->
         <param name="pvtint-local-ip" value="127.0.0.1"/>
