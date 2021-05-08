@@ -6,6 +6,7 @@
 # Basic features
  - public traffic authentication
  - public traffic encryption
+ - passthrough mode to exchange traffic as-is
  - add / remove tunnels in a real time 
 
 <div aling="center">
