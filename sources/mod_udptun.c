@@ -325,7 +325,6 @@ static void *SWITCH_THREAD_FUNC outbound_tunnel_thread(switch_thread_t *thread, 
     switch_status_t status;
     uint32_t send_buffer_id_local = 0;
     switch_size_t bytes = 0;
-    void *pop = NULL;
 
     if((send_buffer = switch_core_alloc(pool, send_buffer_size)) == NULL) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "mem fail\n");
@@ -426,7 +425,7 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
     uint32_t send_len, packet_id = 0;
     switch_size_t bytes = 0;
     time_t salt_renew_time = 0;
-    const char *remote_ip_addr;
+    //const char *remote_ip_addr;
     int fdr = 0;
     char ipbuf[48] = { 0 };
 
@@ -497,7 +496,7 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
 
         bytes = recv_buffer_size;
         if(switch_socket_recvfrom(from_addr, socket, 0, (void *)recv_buffer, &bytes) == SWITCH_STATUS_SUCCESS && bytes > 0) {
-            remote_ip_addr = switch_get_addr(ipbuf, sizeof(ipbuf), from_addr);
+            //remote_ip_addr = switch_get_addr(ipbuf, sizeof(ipbuf), from_addr);
             send_len = 0;
 
             if(!globals.fl_passthrough) {
@@ -543,10 +542,11 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
             if(send_len > 0) {
                 switch_mutex_lock(globals.mutex_tunnels);
                 for(hidx = switch_core_hash_first_iter(globals.tunnels, hidx); hidx; hidx = switch_core_hash_next(&hidx)) {
+                    outbound_tunnel_t *tunnel = NULL;
                     const void *hkey = NULL; void *hval = NULL;
 
                     switch_core_hash_this(hidx, &hkey, NULL, &hval);
-                    outbound_tunnel_t *tunnel = (outbound_tunnel_t *)hval;
+                    tunnel = (outbound_tunnel_t *)hval;
 
                     if(tunnel_sem_take(tunnel)) {
                         if(tunnel->fl_ready && tunnel->fl_send_buf_rdy_wr) {
@@ -563,8 +563,6 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
                 switch_mutex_unlock(globals.mutex_tunnels);
             }
         }
-
-sleep:
         if(pollfd) {
             switch_poll(pollfd, 1, &fdr, 10000);
         } else {
@@ -625,10 +623,11 @@ SWITCH_STANDARD_API(udptun_cmd_function) {
 
             switch_mutex_lock(globals.mutex_tunnels);
             for (hidx = switch_core_hash_first_iter(globals.tunnels, hidx); hidx; hidx = switch_core_hash_next(&hidx)) {
+                outbound_tunnel_t *tunnel = NULL;
                 const void *hkey = NULL; void *hval = NULL;
 
                 switch_core_hash_this(hidx, &hkey, NULL, &hval);
-                outbound_tunnel_t *tunnel = (outbound_tunnel_t *)hval;
+                tunnel = (outbound_tunnel_t *)hval;
 
                 if(tunnel_sem_take(tunnel)) {
                     stream->write_function(stream, "%s [%s:%i] (type: %s, pkts-out: %i)\n", tunnel->name, tunnel->ip, tunnel->port, (tunnel->fl_dynamic ? "dynamic" : "static"), tunnel->pkts_out);
@@ -829,6 +828,7 @@ done:
 
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_udptun_shutdown) {
     switch_hash_index_t *hi = NULL;
+    outbound_tunnel_t *tunnel = NULL;
     void *hval = NULL;
 
     switch_event_unbind_callback(event_handler_shutdown);
@@ -841,7 +841,7 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_udptun_shutdown) {
     switch_mutex_lock(globals.mutex_tunnels);
     for(hi = switch_core_hash_first_iter(globals.tunnels, hi); hi; hi = switch_core_hash_next(&hi)) {
         switch_core_hash_this(hi, NULL, NULL, &hval);
-        outbound_tunnel_t *tunnel = (outbound_tunnel_t *) hval;
+        tunnel = (outbound_tunnel_t *) hval;
         if(tunnel_sem_take(tunnel)) {
             tunnel->fl_do_destroy = true;
             tunnel_sem_release(tunnel);
