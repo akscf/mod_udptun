@@ -2,11 +2,13 @@
  * Copyright (C) AlexandrinKS
  * https://akscf.me/
  **/
-#ifndef UDPTUN_H
-#define UDPTUN_H
+#ifndef MOD_UDPTUN_H
+#define MOD_UDPTUN_H
 
 #include <switch.h>
 #include <switch_stun.h>
+#include <stdint.h>
+#include "cipher.h"
 
 #ifndef true
 #define true 1
@@ -50,5 +52,6 @@ typedef struct {
     uint8_t                 auth_salt[SALT_SIZE];
     uint8_t                 auth_hash[SWITCH_MD5_DIGEST_STRING_SIZE];
 } tunnel_packet_hdr_t;
+
 
 #endif

@@ -3,7 +3,6 @@
  * https://akscf.me/
  **/
 #include "mod_udptun.h"
-#include "cipher.h"
 
 static struct {
     switch_memory_pool_t    *pool;
