@@ -12,30 +12,33 @@ static struct {
     char                    *shared_secret;
     char                    *pvtint_local_ip;
     char                    *pvtint_remote_ip;
+    char                    *udptun_srv_ip;
     uint32_t                pvtint_port_in;
     uint32_t                pvtint_port_out;
-    char                    *udptun_srv_ip;
     uint32_t                udptun_srv_port;
     uint32_t                buffer_max_size;
     uint32_t                active_threads;
+    uint32_t                pvtint_pkts_out;
+    uint32_t                pvtint_pkts_in;
+    uint32_t                pubint_pkts_in;
     uint8_t                 fl_passthrough;
     uint8_t                 fl_auth_public_packets;
     uint8_t                 fl_encrypt_public_packets;
     uint8_t                 fl_shutdown;
     uint8_t                 fl_ready;
     switch_queue_t          *pvt_in_q;
-
+    switch_queue_t          *pub_in_q;
 } globals;
 
 SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load);
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_udptun_shutdown);
 SWITCH_MODULE_DEFINITION(mod_udptun, mod_udptun_load, mod_udptun_shutdown, NULL);
 
-static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, void *obj);
-static void *SWITCH_THREAD_FUNC outbound_tunnel_thread(switch_thread_t *thread, void *obj);
-static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread, void *obj);
-static void *SWITCH_THREAD_FUNC out_data_buffer_producer_thread(switch_thread_t *thread, void *obj);
-
+static void *SWITCH_THREAD_FUNC tunnel_data_in_thread(switch_thread_t *thread, void *obj);
+static void *SWITCH_THREAD_FUNC tunnel_data_out_thread(switch_thread_t *thread, void *obj);
+static void *SWITCH_THREAD_FUNC pvtint_data_in_thread(switch_thread_t *thread, void *obj);
+static void *SWITCH_THREAD_FUNC pvtint_data_out_thread(switch_thread_t *thread, void *obj);
+static void *SWITCH_THREAD_FUNC tunnels_data_copy_thread(switch_thread_t *thread, void *obj);
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // helper functions
@@ -146,7 +149,7 @@ static switch_status_t create_outbound_tunnel(char *name, char *ip, char *port, 
     switch_core_hash_insert(globals.tunnels, tunnel->name, tunnel);
     switch_mutex_unlock(globals.mutex_tunnels);
 
-    launch_thread(tunnel->pool, outbound_tunnel_thread, tunnel);
+    launch_thread(tunnel->pool, tunnel_data_out_thread, tunnel);
 out:
     if(status != SWITCH_STATUS_SUCCESS) {
         if(pool_tmp) {
@@ -209,7 +212,7 @@ static void flush_data_buffer_queue(switch_queue_t *queue) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
-static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, void *obj) {
+static void *SWITCH_THREAD_FUNC tunnel_data_in_thread(switch_thread_t *thread, void *obj) {
     const uint32_t auth_buffer_len = (strlen(globals.shared_secret) + SALT_SIZE);
     const uint32_t recv_buffer_size = globals.buffer_max_size;
     switch_memory_pool_t *pool = globals.pool;
@@ -217,12 +220,13 @@ static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, v
     switch_byte_t *auth_buffer = NULL;
     switch_byte_t *recv_buffer = NULL;
     switch_pollfd_t *pollfd = NULL;
-    switch_socket_t *server_socket = NULL, *client_socket = NULL;
-    switch_sockaddr_t *saddr = NULL, *caddr = NULL, *to_addr = NULL, *from_addr = NULL;
+    switch_socket_t *server_socket = NULL;
+    switch_sockaddr_t *saddr = NULL, *from_addr = NULL;
     switch_byte_t *payload_ptr = NULL;
     tunnel_packet_hdr_t *phdr_ptr = NULL;
     cipher_ctx_t *cipher_ctx = NULL;
     char md5_hash[SWITCH_MD5_DIGEST_STRING_SIZE] = { 0 };
+    data_buffer_t *dtb = NULL;
     switch_size_t bytes = 0;
     int fdr = 0;
     char ipbuf[48] = { 0 };
@@ -250,25 +254,6 @@ static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, v
         cipher_init(cipher_ctx, globals.shared_secret, strlen(globals.shared_secret));
     }
 
-    /* xconf client socket */
-    if((status = switch_sockaddr_info_get(&caddr, globals.pvtint_local_ip, SWITCH_UNSPEC, 0, 0, pool)) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "pvtint_client: socket fail (switch_sockaddr_info_get) [#1]\n");
-        goto out;
-    }
-    if((status = switch_sockaddr_info_get(&to_addr, globals.pvtint_remote_ip, SWITCH_UNSPEC, globals.pvtint_port_out, 0, pool)) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "pvtint_client: socket fail (switch_sockaddr_info_get) [#2]\n");
-        goto out;
-    }
-    if((status = switch_socket_create(&client_socket, switch_sockaddr_get_family(caddr), SOCK_DGRAM, 0, pool)) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "pvtint_client: socket fail (switch_socket_create)\n");
-        goto out;
-    }
-    if((status = switch_socket_bind(client_socket, caddr)) != SWITCH_STATUS_SUCCESS) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "pvtint_client: socket fail (switch_socket_bind)\n");
-        goto out;
-    }
-
-    /* serevr socket */
     if((status = switch_sockaddr_info_get(&saddr, globals.udptun_srv_ip, SWITCH_UNSPEC, globals.udptun_srv_port, 0, pool)) != SWITCH_STATUS_SUCCESS) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "udptun_srv: socket fail (switch_sockaddr_info_get) [#1]\n");
         goto out;
@@ -340,10 +325,19 @@ static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, v
                     }
                 }
 
-                bytes = phdr_ptr->payload_len;
-                switch_socket_sendto(client_socket, to_addr, 0, (void *)payload_ptr, &bytes);
+                data_buffer_alloc(&dtb, (uint8_t *)payload_ptr, phdr_ptr->payload_len);
+                if(switch_queue_trypush(globals.pub_in_q, dtb) != SWITCH_STATUS_SUCCESS) {
+                    data_buffer_free(dtb);
+                } else {
+                    globals.pubint_pkts_in++;
+                }
             } else {
-                switch_socket_sendto(client_socket, to_addr, 0, (void *)recv_buffer, &bytes);
+                data_buffer_alloc(&dtb, (uint8_t *)recv_buffer, bytes);
+                if(switch_queue_trypush(globals.pub_in_q, dtb) != SWITCH_STATUS_SUCCESS) {
+                    data_buffer_free(dtb);
+                } else {
+                    globals.pubint_pkts_in++;
+                }
             }
         }
 sleep:
@@ -361,9 +355,6 @@ out:
     if (server_socket) {
         switch_socket_close(server_socket);
     }
-    if (client_socket) {
-        switch_socket_close(client_socket);
-    }
 
     switch_mutex_lock(globals.mutex);
     if(globals.active_threads) globals.active_threads--;
@@ -372,7 +363,7 @@ out:
     return NULL;
 }
 
-static void *SWITCH_THREAD_FUNC outbound_tunnel_thread(switch_thread_t *thread, void *obj) {
+static void *SWITCH_THREAD_FUNC tunnel_data_out_thread(switch_thread_t *thread, void *obj) {
     volatile outbound_tunnel_t *_ref = (outbound_tunnel_t *) obj;
     outbound_tunnel_t *tunnel = (outbound_tunnel_t *) _ref;
     const uint32_t send_buffer_size = globals.buffer_max_size;
@@ -454,7 +445,7 @@ out:
     return NULL;
 }
 
-static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread, void *obj) {
+static void *SWITCH_THREAD_FUNC pvtint_data_in_thread(switch_thread_t *thread, void *obj) {
     const uint32_t auth_buffer_len = (strlen(globals.shared_secret) + SALT_SIZE);
     const uint32_t recv_buffer_size = globals.buffer_max_size;
     const uint32_t send_buffer_size = globals.buffer_max_size;
@@ -591,6 +582,8 @@ static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread,
                 data_buffer_alloc(&ldtb, send_buffer, send_len);
                 if(switch_queue_trypush(globals.pvt_in_q, ldtb) != SWITCH_STATUS_SUCCESS) {
                     data_buffer_free(ldtb);
+                } else {
+                    globals.pvtint_pkts_in++;
                 }
             }
         }
@@ -616,7 +609,63 @@ out:
     return NULL;
 }
 
-static void *SWITCH_THREAD_FUNC out_data_buffer_producer_thread(switch_thread_t *thread, void *obj) {
+static void *SWITCH_THREAD_FUNC pvtint_data_out_thread(switch_thread_t *thread, void *obj) {
+    switch_status_t status = SWITCH_STATUS_SUCCESS;
+    switch_memory_pool_t *pool = globals.pool;
+    switch_sockaddr_t *caddr = NULL, *to_addr = NULL;
+    switch_socket_t *socket = NULL;
+    switch_size_t bytes = 0;
+    void *pop = NULL;
+
+    if((status = switch_sockaddr_info_get(&caddr, globals.pvtint_local_ip, SWITCH_UNSPEC, 0, 0, pool)) != SWITCH_STATUS_SUCCESS) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "pvtint_client: socket fail (switch_sockaddr_info_get) [#1]\n");
+        goto out;
+    }
+    if((status = switch_sockaddr_info_get(&to_addr, globals.pvtint_remote_ip, SWITCH_UNSPEC, globals.pvtint_port_out, 0, pool)) != SWITCH_STATUS_SUCCESS) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "pvtint_client: socket fail (switch_sockaddr_info_get) [#2]\n");
+        goto out;
+    }
+    if((status = switch_socket_create(&socket, switch_sockaddr_get_family(caddr), SOCK_DGRAM, 0, pool)) != SWITCH_STATUS_SUCCESS) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "pvtint_client: socket fail (switch_socket_create)\n");
+        goto out;
+    }
+    if((status = switch_socket_bind(socket, caddr)) != SWITCH_STATUS_SUCCESS) {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "pvtint_client: socket fail (switch_socket_bind)\n");
+        goto out;
+    }
+
+    while(true) {
+        if(globals.fl_shutdown) {
+            break;
+        }
+
+        while(switch_queue_trypop(globals.pub_in_q, &pop) == SWITCH_STATUS_SUCCESS) {
+            data_buffer_t *ldtb = (data_buffer_t *)pop;
+
+            if(ldtb && ldtb->data_len) {
+                bytes = ldtb->data_len;
+                switch_socket_sendto(socket, to_addr, 0, (void *)ldtb->data, &bytes);
+                globals.pvtint_pkts_out++;
+            }
+            data_buffer_free(ldtb);
+        }
+
+        switch_yield(5000);
+    }
+
+out:
+    if (socket) {
+        switch_socket_close(socket);
+    }
+
+    switch_mutex_lock(globals.mutex);
+    if(globals.active_threads) globals.active_threads--;
+    switch_mutex_unlock(globals.mutex);
+
+    return NULL;
+}
+
+static void *SWITCH_THREAD_FUNC tunnels_data_copy_thread(switch_thread_t *thread, void *obj) {
     switch_hash_index_t *hidx = NULL;
     void *pop = NULL;
 
@@ -673,7 +722,12 @@ static void event_handler_shutdown(switch_event_t *event) {
     }
 }
 
-#define CMD_SYNTAX "conf - show config\nlist - show tunnels\n<name> add ip port - add a new tunnels\n<name> del - terminate tunnels\n"
+#define CMD_SYNTAX "conf - show configuration\n" \
+    "list - show tunnels\n" \
+    "stat - show statistics\n" \
+    "<name> add ip port - add and up a new tunnel\n" \
+    "<name> del - terminate and delete tunnel\n"
+
 SWITCH_STANDARD_API(udptun_cmd_function) {
    char *mycmd = NULL, *argv[10] = { 0 };
     int argc = 0;
@@ -692,6 +746,12 @@ SWITCH_STANDARD_API(udptun_cmd_function) {
             stream->write_function(stream, "outbound tunnel.......: %s:%i ==> {*}\n", globals.pvtint_local_ip, globals.pvtint_port_in);
             stream->write_function(stream, "inbound tunnel........: %s:%i ==> %s:%i\n", globals.udptun_srv_ip, globals.udptun_srv_port, globals.pvtint_remote_ip, globals.pvtint_port_out);
             stream->write_function(stream, "encryption............: %s\n", globals.fl_encrypt_public_packets ? "on" : "off");
+            goto out;
+        }
+        if(strcasecmp(argv[0], "stat") == 0) {
+            stream->write_function(stream, "pvt-int pkts in....: %i\n", globals.pvtint_pkts_in);
+            stream->write_function(stream, "pvt-int pkts out...: %i\n", globals.pvtint_pkts_out);
+            stream->write_function(stream, "pub-int pkts in....: %i\n", globals.pubint_pkts_in);
             goto out;
         }
         if(strcasecmp(argv[0], "list") == 0) {
@@ -778,7 +838,8 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
     switch_mutex_init(&globals.mutex_tunnels, SWITCH_MUTEX_NESTED, pool);
     switch_core_hash_init(&globals.tunnels);
 
-    switch_queue_create(&globals.pvt_in_q, IN_QUEUE_SIZE, pool);
+    switch_queue_create(&globals.pvt_in_q, QUEUE_SIZE, pool);
+    switch_queue_create(&globals.pub_in_q, QUEUE_SIZE, pool);
 
     globals.pool = pool;
     globals.fl_shutdown = false;
@@ -880,13 +941,14 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
         switch_goto_status(SWITCH_STATUS_GENERR, done);
     }
 
-    launch_thread(pool, out_data_buffer_producer_thread, NULL);
-    launch_thread(pool, inbound_tunnel_thread, NULL);
-    launch_thread(pool, pvtint_io_server_thread, NULL);
+    launch_thread(pool, tunnels_data_copy_thread, NULL);
+    launch_thread(pool, pvtint_data_out_thread, NULL);
+    launch_thread(pool, pvtint_data_in_thread, NULL);
+    launch_thread(pool, tunnel_data_in_thread, NULL);
 
     globals.fl_ready = true;
 
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "udp-tun-%s ready\n", VERSION);
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "udptun (%s)\n", VERSION);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "passthrough mode.......: %s\n", (globals.fl_passthrough ? "on" : "off"));
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "outbound tunnels.......: %s:%i ==> {*}\n", globals.pvtint_local_ip, globals.pvtint_port_in);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "inbound tunnels........: %s:%i ==> %s:%i\n", globals.udptun_srv_ip, globals.udptun_srv_port, globals.pvtint_remote_ip, globals.pvtint_port_out);
@@ -921,7 +983,9 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_udptun_shutdown) {
     }
 
     flush_data_buffer_queue(globals.pvt_in_q);
+    flush_data_buffer_queue(globals.pub_in_q);
     switch_queue_term(globals.pvt_in_q);
+    switch_queue_term(globals.pub_in_q);
 
     switch_mutex_lock(globals.mutex_tunnels);
     for(hi = switch_core_hash_first_iter(globals.tunnels, hi); hi; hi = switch_core_hash_next(&hi)) {

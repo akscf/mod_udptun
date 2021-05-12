@@ -23,7 +23,7 @@
 #define SALT_LIFE_TIME              900 // 15 min
 #define SHARED_SECRET_LEN_MAX       32
 #define SHARED_SECRET_LEN_MIN       4
-#define IN_QUEUE_SIZE               64
+#define QUEUE_SIZE                  64
 #define TUNNEL_QUEUE_SIZE           16
 
 #define PACKET_FLAGS_ENCRYPTED      0x1

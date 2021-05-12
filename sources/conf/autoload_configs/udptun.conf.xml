@@ -6,13 +6,13 @@
         <param name="encrypt-public-packets" value="false"/>
         <param name="passthrough_mode" value="false"/>
 
-        <!-- private interface for capture traffic (xconf or similar apps) -->
+        <!-- private interface (xconf or similar apps) -->
         <param name="pvtint-local-ip" value="127.0.0.1"/>
         <param name="pvtint-remote-ip" value="127.0.0.1"/>
         <param name="pvtint-port-in"  value="65020"/>
         <param name="pvtint-port-out" value="65021"/>
 
-        <!-- inbound tunnel -->
+        <!-- public interface / another udptun -->
         <param name="pubint-ip" value="127.0.0.1"/>
         <param name="pubint-port" value="65022"/>
     </settings>
