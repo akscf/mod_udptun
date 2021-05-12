@@ -34,7 +34,7 @@ SWITCH_MODULE_DEFINITION(mod_udptun, mod_udptun_load, mod_udptun_shutdown, NULL)
 static void *SWITCH_THREAD_FUNC inbound_tunnel_thread(switch_thread_t *thread, void *obj);
 static void *SWITCH_THREAD_FUNC outbound_tunnel_thread(switch_thread_t *thread, void *obj);
 static void *SWITCH_THREAD_FUNC pvtint_io_server_thread(switch_thread_t *thread, void *obj);
-static void *SWITCH_THREAD_FUNC out_data_buffer_produccer_thread(switch_thread_t *thread, void *obj);
+static void *SWITCH_THREAD_FUNC out_data_buffer_producer_thread(switch_thread_t *thread, void *obj);
 
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
@@ -616,7 +616,7 @@ out:
     return NULL;
 }
 
-static void *SWITCH_THREAD_FUNC out_data_buffer_produccer_thread(switch_thread_t *thread, void *obj) {
+static void *SWITCH_THREAD_FUNC out_data_buffer_producer_thread(switch_thread_t *thread, void *obj) {
     switch_hash_index_t *hidx = NULL;
     void *pop = NULL;
 
@@ -880,7 +880,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_udptun_load) {
         switch_goto_status(SWITCH_STATUS_GENERR, done);
     }
 
-    launch_thread(pool, out_data_buffer_produccer_thread, NULL);
+    launch_thread(pool, out_data_buffer_producer_thread, NULL);
     launch_thread(pool, inbound_tunnel_thread, NULL);
     launch_thread(pool, pvtint_io_server_thread, NULL);
 
