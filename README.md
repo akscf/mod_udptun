@@ -7,7 +7,7 @@
  - low latacy (good fit for RTP traffic)
  - passthrough mode to exchange traffic as-is
  - authentication and encryption traffic (based on RC4)
- - add / remove tunnels in a real time 
+ - managing tunnels in real time (add, del, so on) 
 
 <div aling="center">
  <img src='https://github.com/akscf/mod_udptun/blob/main/bin/schema.png'>
