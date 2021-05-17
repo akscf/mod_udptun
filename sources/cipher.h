@@ -4,8 +4,8 @@
  * Copyright (C) AlexandrinKS
  * https://akscf.me/
  **/
-#ifndef XCONF_CIPHER_H
-#define XCONF_CIPHER_H
+#ifndef UDPTUN_CIPHER_H
+#define UDPTUN_CIPHER_H
 
 #include <string.h>
 #include <unistd.h>
