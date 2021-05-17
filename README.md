@@ -1,6 +1,6 @@
 <p>
  This module was written as helper tools for the mod_xconf (to expand abillities in point-to-point mode).<br>
- When there is a need to connect several separate hosts/networks between themselves (in point-to-point mode) but the situation disallows to use VPN or similar services.<br>
+ It gives to connect several separate hosts/networks between themselves (in point-to-point mode) in the situations when VPN or similar services not available/suitable. <br>
 </p>
 
 # Basic features
