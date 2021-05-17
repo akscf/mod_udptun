@@ -5,7 +5,7 @@
 
 # Basic features
  - low latacy (good fit for RTP traffic)
- - passthrough mode to exchange traffic as-is
+ - passthrough mode (to exchange traffic as-is, without udptun envelope)
  - authentication and encryption traffic (based on RC4)
  - managing tunnels in real time (add, del, so on) 
 
