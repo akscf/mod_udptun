@@ -1,15 +1,11 @@
 <p>
- This module was written as helper tools for the mod_xconf (to expand abillities in point-to-point mode).<br>
- It gives to connect several separate hosts/networks between themselves (in point-to-point mode) in the situations when VPN or similar services not available/suitable. <br>
+  A helper module was written to work in tandem with mod_xconf (to expand abillities in unicast mode), one gives opportunity to connect separated hosts/networks between themselves and exchanging UPD traffic. <br>
+  It can be useful in the situation when VPN (or similar services) not available or you can't use it for any reasons (in our case). <br>
 </p>
 
-# Basic features
- - low latacy (good fit for RTP traffic)
- - passthrough mode (to exchange traffic as-is, without udptun envelope)
- - authentication and encryption traffic (based on RC4)
- - managing tunnels in real time (add, del, so on) 
-
-<div aling="center">
- <img src='https://github.com/akscf/mod_udptun/blob/main/bin/schema.png'>
-</div>
+### Features
+ - low latacy (good fit for RTP)
+ - bypass mode (exchange packets as-is, without udptun headers)
+ - traffic authentication and encryption (based on RC4)
+ - managing tunnels in a real time (add, del, ...)
 
