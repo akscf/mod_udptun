@@ -1,8 +1,8 @@
 /**
  * a simple stream cipher based on RC4
  *
- * Copyright (C) AlexandrinKS
- * https://akscf.me/
+ * (C)2021 aks
+ * https://github.com/akscf/
  **/
 #include "cipher.h"
 

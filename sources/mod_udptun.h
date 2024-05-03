@@ -1,6 +1,7 @@
 /**
- * Copyright (C) AlexandrinKS
- * https://akscf.me/
+ *
+ * (C)2021 aks
+ * https://github.com/akscf/
  **/
 #ifndef MOD_UDPTUN_H
 #define MOD_UDPTUN_H
